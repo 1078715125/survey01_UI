@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tx="http://www.springframework.org/schema/tx"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:aop="http://www.springframework.org/schema/aop" xmlns:cache="http://www.springframework.org/schema/cache"
+	xsi:schemaLocation="http://www.springframework.org/schema/aop http://www.springframework.org/schema/aop/spring-aop-4.0.xsd
+		http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+		http://www.springframework.org/schema/cache http://www.springframework.org/schema/cache/spring-cache-4.0.xsd
+		http://www.springframework.org/schema/tx http://www.springframework.org/schema/tx/spring-tx-4.0.xsd
+		http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-4.0.xsd">
+
+	<!-- 自动扫描的包 -->
+	<context:component-scan base-package="com.atguigu.survey.component.*">
+		<context:exclude-filter type="annotation"
+			expression="org.springframework.stereotype.Controller" />
+	</context:component-scan>
+
+	<!-- 引入外部属性文件 -->
+	<context:property-placeholder location="classpath:jdbc.properties" />
+
+	<!-- 配置数据源(分布式) -->
+	<!-- 配置数据源模板bean -->
+	<bean id="dataSource" class="com.mchange.v2.c3p0.ComboPooledDataSource"
+		abstract="true">
+		<property name="user" value="${jdbc.user}" />
+		<property name="password" value="${jdbc.password}" />
+		<property name="driverClass" value="${jdbc.driverClass}" />
+		<property name="initialPoolSize" value="${jdbc.initialPoolSize}" />
+		<property name="minPoolSize" value="${jdbc.minPoolSize}" />
+		<property name="maxPoolSize" value="${jdbc.maxPoolSize}" />
+		<property name="acquireIncrement" value="${jdbc.acquireIncrement}" />
+		<property name="maxStatements" value="${jdbc.maxStatements}" />
+		<property name="maxStatementsPerConnection" value="${jdbc.maxStatementsPerConnection}" />
+	</bean>
+
+	<!-- 配置主数据源 -->
+	<bean id="dataSourceMain" parent="dataSource">
+		<property name="jdbcUrl" value="${jdbc.jdbcUrl}" />
+	</bean>
+	<!-- 配置日志数据库的数据源 -->
+	<bean id="dataSourceLog" parent="dataSource">
+		<property name="jdbcUrl" value="${jdbc.logUrl}" />
+	</bean>
+
+	<!-- 配置路由器数据源 -->
+	<bean id="surveyRouterDataSource" class="com.atguigu.survey.router.SurveyRouterDataSource">
+		<property name="targetDataSources">
+			<map>
+				<entry key="DATASOURCE_MAIN" value-ref="dataSourceMain" />
+				<entry key="DATASOURCE_LOG" value-ref="dataSourceLog" />
+			</map>
+		</property>
+		<property name="defaultTargetDataSource" ref="dataSourceMain" />
+	</bean>
+
+	<!-- 配置SessionFactory -->
+	<bean id="sessionFactory"
+		class="org.springframework.orm.hibernate4.LocalSessionFactoryBean">
+		<property name="dataSource" ref="surveyRouterDataSource" />
+		<!-- 指定cfg文件的位置 -->
+		<property name="configLocation" value="classpath:hibernate.cfg.xml" />
+		<!-- 指定hbm文件的位置 -->
+		<property name="mappingLocations"
+			value="classpath:com/atguigu/survey/entity/*/*.hbm.xml"></property>
+	</bean>
+
+	<!-- 配置事务管理器 -->
+	<bean id="transactionManager"
+		class="org.springframework.orm.hibernate4.HibernateTransactionManager">
+		<property name="sessionFactory" ref="sessionFactory" />
+	</bean>
+
+	<!-- 配置基于XML的声明式事务 -->
+	<!-- 1.配置事务切入点表达式 -->
+	<aop:config>
+		<aop:pointcut expression="execution(* *..*Service.*(..))"
+			id="txpc" />
+		<!-- 引用事务通知 -->
+		<aop:advisor advice-ref="txAdvice" pointcut-ref="txpc"
+			order="2" />
+	</aop:config>
+
+	<!-- 2.配置事务通知 -->
+	<tx:advice id="txAdvice" transaction-manager="transactionManager">
+		<tx:attributes>
+			<!-- 所有的事务方法都必须在这里进行配置，哪怕所有的属性都使用默认值 -->
+			<!-- 如果没有配置，就会报：No Session found on current thread -->
+			<tx:method name="get*" read-only="true" />
+			<tx:method name="check*" read-only="true" />
+			<tx:method name="login" read-only="true" />
+			<tx:method name="create*" />
+			<tx:method name="update*" />
+			<tx:method name="batch*" />
+			<tx:method name="save*" />
+			<tx:method name="remove*" />
+			<tx:method name="delete*" />
+			<tx:method name="regist*" />
+			<tx:method name="parse*" />
+		</tx:attributes>
+	</tx:advice>
+	<!-- 配置log日志的切面相关 -->
+	<bean id="logRecordor" class="com.atguigu.survey.aspect.LogRecordor" />
+	<aop:config>
+		<aop:aspect order="1" ref="logRecordor" id="log">
+			<aop:pointcut id="logpc"
+				expression="(execution(* *..*Service.update*(..)) or
+												execution(* *..*Service.create*(..)) or
+												execution(* *..*Service.batch*(..)) or
+												execution(* *..*Service.save*(..)) or
+												execution(* *..*Service.remove*(..)) or
+												execution(* *..*Service.delete*(..)) or
+												execution(* *..*Service.regist*(..)) or
+												execution(* *..*Service.parse*(..))) and !bean(logServiceImpl)" />
+			<aop:around method="doRecordLog" pointcut-ref="logpc" />
+		</aop:aspect>
+	</aop:config>
+
+	<!-- 配置石英任务 -->
+	<!-- 1.配置石英任务Bean细节 -->
+	<bean id="jobDetailBean" class="org.springframework.scheduling.quartz.JobDetailBean">
+		<property name="jobClass" value="com.atguigu.survey.quartz.LogQuartzScheduler" />
+		<property name="jobDataMap">
+			<!-- 注入logService的配置方式 -->
+			<map>
+				<entry key="logService" value-ref="logServiceImpl" />
+			</map>
+		</property>
+	</bean>
+
+	<!-- 2.配置石英任务触发器 -->
+	<bean id="cronTriggerBean" class="org.springframework.scheduling.quartz.CronTriggerBean">
+		<property name="jobDetail" ref="jobDetailBean" />
+		<property name="cronExpression" value="0 0 0 15 * ?" /><!-- 0 
+			0 0 15 * ? -->
+	</bean>
+
+	<!-- 3.配置任务调度工厂Bean -->
+	<bean id="schedulerFactoryBean"
+		class="org.springframework.scheduling.quartz.SchedulerFactoryBean">
+		<property name="triggers">
+			<list>
+				<ref bean="cronTriggerBean" />
+			</list>
+		</property>
+	</bean>
+
+	<!-- 配置缓存抽象 -->
+	<!-- 1.配置工厂bean -->
+	<bean id="ehCacheManagerFactoryBean"
+		class="org.springframework.cache.ehcache.EhCacheManagerFactoryBean">
+		<property name="configLocation" value="classpath:ehcache.xml" />
+	</bean>
+
+	<!-- 2.配置缓存管理器 -->
+	<bean id="cacheManager" class="org.springframework.cache.ehcache.EhCacheCacheManager">
+		<property name="cacheManager" ref="ehCacheManagerFactoryBean" />
+	</bean>
+
+	<!-- 3.配置缓存通知 -->
+	<!-- 3.1.配置自定义键生成器 -->
+	<bean id="keyGenerator" class="com.atguigu.survey.cache.SurveyKeyGenerator"/>
+	
+	<cache:advice id="cacheAdvice" cache-manager="cacheManager"
+		key-generator="keyGenerator">
+		<!-- cache属性指定缓存区域的名称 -->
+		<cache:caching cache="surveyCache">
+			<!-- 指定当前切入点指定的方法中哪些是需要进行缓存的 -->
+			<cache:cacheable method="getLimitedAllAvailablePage" />
+			<cache:cacheable method="getSurveyById" />
+			<cache:cache-evict method="updateSurveyComplete" all-entries="true"/>
+		</cache:caching>
+	</cache:advice>
+
+	<!-- 4.配置缓存切面 -->
+	<aop:config>
+		<!-- 缓存切面要先于事务切面执行，因为如果缓存切面中已经有了需要的数据，则不必通过事务切面查询数据库 -->
+		<aop:advisor order="0" advice-ref="cacheAdvice" pointcut="execution(* *..EngageService.getLimitedAllAvailablePage(..)) or
+														execution(* *..EngageService.getSurveyById(..)) or
+														execution(* *..SurveyService.updateSurveyComplete(..))"/>
+	</aop:config>
+
+	
+
+</beans>
